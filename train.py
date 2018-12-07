@@ -16,7 +16,7 @@ use_sigmoid = False
 n_multi = 10
 
 bs = 8
-lr = 2e-40
+lr = 2e-4
 lambda_A = 1.
 lambda_B = 1.
 lambda_z_B = .025
