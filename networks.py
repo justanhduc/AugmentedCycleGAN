@@ -292,15 +292,20 @@ def discriminate(net, crit, fake, real):
 
 class AugmentedCycleGAN:
     def __init__(self, input_shape, n_latent, num_gen_filters=32, num_dis_filters=64, num_enc_filters=32, output_dim=3,
-                 use_dropout=False, use_sigmoid=False, name='Augmented CycleGAN'):
+                 use_dropout=False, use_sigmoid=False, use_latent_gan=False, name='Augmented CycleGAN'):
+        self.use_latent_gan = use_latent_gan
+
         self.netG_A_B = CINResnetGen(input_shape, num_gen_filters, n_latent, 3, use_dropout=use_dropout, name=name + 'G_A_B')
         self.netG_B_A = ResnetGen(input_shape, num_gen_filters, 3, use_dropout=use_dropout, name=name + 'G_B_A')
 
-        latent_input_shape = (input_shape[0], input_shape[1] + output_dim) + input_shape[2:]
+        latent_input_shape = input_shape[:1] + (output_dim,) + input_shape[2:]
         self.netE_B = LatentEncoder(latent_input_shape, n_latent, num_enc_filters,
                                     partial(nn.BatchNormLayer, activation=None), False, name=name + '/E_B')
         self.netD_A = DiscriminatorEdges(self.netG_B_A.output_shape, 32, use_sigmoid=use_sigmoid, name=name+'/D_A')
         self.netD_B = Discriminator(self.netG_A_B.output_shape, num_dis_filters, use_sigmoid=use_sigmoid, name=name+'/D_B')
+
+        if use_latent_gan:
+            self.netD_z_B = DiscriminatorLatent((None, n_latent), num_dis_filters, use_sigmoid=use_sigmoid, name=name+'/D_z_B')
         self.gan_loss = partial(nn.gan_loss, div=nn.binary_cross_entropy if use_sigmoid else nn.norm_error)
 
     def generate_cycle(self, real_A, real_B, z_B):
@@ -351,6 +356,8 @@ class AugmentedCycleGAN:
         return T.reshape(multi_fake_B, (num, -1) + shape[1:])
 
     def get_dis_cost(self, real_A, real_B, z_B):
+        losses = OrderedDict()
+
         fake_B = self.netG_A_B(real_A, z_B)
         fake_A = self.netG_B_A(real_B)
 
@@ -362,17 +369,44 @@ class AugmentedCycleGAN:
 
         loss_D = loss_D_A + loss_D_B
 
-        losses = OrderedDict([('D_A', loss_D_A), ('D_B', loss_D_B), ('loss_D', loss_D),
-                              ('P_t_A', pred_true_A.mean()), ('P_f_A', pred_fake_A.mean()),
-                              ('P_t_B', pred_true_B.mean()), ('P_f_B', pred_fake_B.mean())])
+        if self.use_latent_gan:
+            concat_B_A = T.concatenate((fake_A, real_B), 1)
+            mu_z_real_B, logvar_z_real_B = self.netE_B(concat_B_A)
+            logvar_z_real_B *= 0.
+            loss_D_fake_z_B, loss_D_true_z_B, pred_fake_z_B, pred_true_z_B = discriminate(self.netD_z_B, self.gan_loss,
+                                                                                          mu_z_real_B, z_B)
+            loss_D_z_B = .5 * (loss_D_fake_z_B + loss_D_true_z_B)
+            loss_D += loss_D_z_B
+            losses['loss_D_z_B'] = loss_D_z_B
+
+        losses.update([('D_A', loss_D_A), ('D_B', loss_D_B), ('loss_D', loss_D), ('P_t_A', pred_true_A.mean()),
+                       ('P_f_A', pred_fake_A.mean()), ('P_t_B', pred_true_B.mean()), ('P_f_B', pred_fake_B.mean())])
         return losses
 
     def get_gen_cost(self, real_A, real_B, z_B, lambda_A, lambda_B, lambda_z_B):
+        losses = OrderedDict()
+        loss_G = 0.
+
         fake_B = self.netG_A_B(real_A, z_B)
         fake_A = self.netG_B_A(real_B)
         concat_B_A = T.concatenate((fake_A, real_B), 1)
         mu_z_real_B, logvar_z_real_B = self.netE_B(concat_B_A)
-        post_z_real_B = nn.utils.gauss_reparametrize(mu_z_real_B, logvar_z_real_B)
+
+        if self.use_latent_gan:
+            post_z_real_B = mu_z_real_B
+            logvar_z_real_B *= 0.
+
+            pred_fake_z_B = self.netD_z_B(post_z_real_B)
+            loss_G_z_B = self.gan_loss(pred_fake_z_B, True)
+            loss_G += loss_G_z_B
+            losses['loss_G_z_B'] = loss_G_z_B
+        else:
+            post_z_real_B = nn.utils.gauss_reparametrize(mu_z_real_B, logvar_z_real_B)
+
+            # measure KLD
+            kld_z_B = nn.kld_std_gauss(mu_z_real_B, logvar_z_real_B)
+            loss_G += kld_z_B * lambda_z_B
+            losses['kld_z_B'] = kld_z_B
 
         pred_fake_A = self.netD_A(fake_A)
         loss_G_A = self.gan_loss(pred_fake_A, True)
@@ -388,22 +422,22 @@ class AugmentedCycleGAN:
         concat_A_B = T.concatenate((real_A, fake_B), 1)
         mu_z_fake_B, logvar_z_fake_B = self.netE_B(concat_A_B)
 
-        # minimize the NLL of original z_B sample
-        log_prob_z_B = nn.log_prob_gaussian(z_B, mu_z_fake_B.flatten(2), logvar_z_fake_B.flatten(2))
-        loss_cycle_z_B = -T.mean(log_prob_z_B)
-
-        # measure KLD
-        kld_z_B = nn.kld_std_gauss(mu_z_real_B, logvar_z_real_B)
+        if self.use_latent_gan:
+            loss_cycle_z_B = nn.norm_error(mu_z_fake_B, z_B, 1)
+        else:
+            # minimize the NLL of original z_B sample
+            log_prob_z_B = nn.log_prob_gaussian(z_B, mu_z_fake_B.flatten(2), logvar_z_fake_B.flatten(2))
+            loss_cycle_z_B = -T.mean(log_prob_z_B)
 
         # B -> A,z_B -> B cycle loss
         rec_B = self.netG_A_B(fake_A, post_z_real_B)
         loss_cycle_B = nn.norm_error(rec_B, real_B, 1)
 
         loss_cycle = loss_cycle_A * lambda_A + loss_cycle_B * lambda_B + loss_cycle_z_B * lambda_z_B
-        loss_G = loss_G_A + loss_G_B + loss_cycle + kld_z_B * lambda_z_B
+        loss_G = loss_G_A + loss_G_B + loss_cycle
 
-        losses = OrderedDict([('G_A', loss_G_A), ('Cyc_A', loss_cycle_A), ('Cyc_z_B', loss_cycle_z_B),
-                              ('KLD_z_B', kld_z_B), ('G_B', loss_G_B), ('Cyc_B', loss_cycle_B), ('loss_G', loss_G)])
+        losses.update([('G_A', loss_G_A), ('Cyc_A', loss_cycle_A), ('Cyc_z_B', loss_cycle_z_B), ('G_B', loss_G_B),
+                       ('Cyc_B', loss_cycle_B), ('loss_G', loss_G)])
         visuals = OrderedDict([('real_A', real_A), ('fake_B', fake_B), ('rec_A', rec_A),
                                ('real_B', real_B), ('fake_A', fake_A), ('rec_B', rec_B)])
         return losses, visuals

@@ -1,5 +1,5 @@
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 import neuralnet as nn
 from theano import tensor as T
 import numpy as np
@@ -13,6 +13,7 @@ n_dis_filters = 64
 n_enc_filters = 32
 use_dropout = False
 use_sigmoid = False
+use_latent_gan = False
 n_multi = 10
 
 bs = 80
@@ -51,7 +52,7 @@ def train():
     lr_ = nn.placeholder(value=lr, name='lr_plhd')
 
     net = AugmentedCycleGAN((None, 3, image_size, image_size), n_latent, n_gen_filters, n_dis_filters, n_enc_filters, 3,
-                            use_dropout, use_sigmoid)
+                            use_dropout, use_sigmoid, use_latent_gan)
 
     nn.set_training_on()
     updates_dis, updates_gen, dis_losses, gen_losses, _ = net.learn(X_A, X_B, z, lambda_A, lambda_B, lambda_z_B,
