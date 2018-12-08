@@ -226,7 +226,7 @@ class DiscriminatorEdges(nn.Sequential):
 
 
 class DiscriminatorLatent(nn.Sequential):
-    def __init__(self, input_shape, n_nodes, use_bias=True, use_sigmoid=False, name='Latent Discriminator'):
+    def __init__(self, input_shape, n_nodes, use_sigmoid=False, name='Latent Discriminator'):
         super(DiscriminatorLatent, self).__init__(input_shape=input_shape, layer_name=name)
         self.append(nn.FCLayer(self.output_shape, n_nodes, activation=None, layer_name=name+'/fc1'))
         self.append(nn.BatchNormLayer(self.output_shape, name+'/bn1', activation='lrelu', alpha=.2))
@@ -244,8 +244,10 @@ class DiscriminatorLatent(nn.Sequential):
 
 
 class LatentEncoder(nn.Sequential):
-    def __init__(self, input_shape, n_latent, num_filters, norm_layer, use_bias=False, name='Latent Encoder'):
+    def __init__(self, input_shape, n_latent, num_filters, norm_layer, deterministic=False, use_bias=False,
+                 name='Latent Encoder'):
         super(LatentEncoder, self).__init__(input_shape=input_shape, layer_name=name)
+        self.deterministic = deterministic
         self.enc = nn.Sequential(input_shape=input_shape, layer_name=name+'/enc')
         self.enc.append(nn.Conv2DLayer(self.enc.output_shape, num_filters, 3, stride=2, no_bias=False, activation='relu',
                                        layer_name=name+'/conv1'))
@@ -270,15 +272,19 @@ class LatentEncoder(nn.Sequential):
         self.enc.append(norm_layer(self.enc.output_shape, name+'/norm5'))
         self.enc.append(nn.ActivationLayer(self.enc.output_shape, 'relu', name+'/act5'))
 
-        self.enc_mu = nn.Conv2DLayer(self.enc.output_shape, n_latent, 1, no_bias=False, activation=None, layer_name=name+'/mu')
-        self.enc_logvar = nn.Conv2DLayer(self.enc.output_shape, n_latent, 1, no_bias=False, activation=None, layer_name=name+'/logvar')
-        self.extend((self.enc, self.enc_mu, self.enc_logvar))
+        self.enc_mu = nn.Conv2DLayer(self.enc.output_shape, n_latent, 1, no_bias=False, activation=None,
+                                     layer_name=name + '/mu')
+        self.extend((self.enc, self.enc_mu))
+
+        if not deterministic:
+            self.enc_logvar = nn.Conv2DLayer(self.enc.output_shape, n_latent, 1, no_bias=False, activation=None,
+                                             layer_name=name + '/logvar')
+            self.append(self.enc_logvar)
 
     def get_output(self, input, *args, **kwargs):
         out = self.enc(input)
-        mu = self.enc_mu(out).flatten(2)
-        logvar = self.enc_logvar(out).flatten(2)
-        return mu, logvar
+        return self.enc_mu(out).flatten(2) if self.deterministic \
+            else (self.enc_mu(out).flatten(2), self.enc_logvar(out).flatten(2))
 
 
 def discriminate(net, crit, fake, real):
@@ -300,7 +306,8 @@ class AugmentedCycleGAN:
 
         latent_input_shape = input_shape[:1] + (output_dim,) + input_shape[2:]
         self.netE_B = LatentEncoder(latent_input_shape, n_latent, num_enc_filters,
-                                    partial(nn.BatchNormLayer, activation=None), False, name=name + '/E_B')
+                                    partial(nn.BatchNormLayer, activation=None), deterministic=use_latent_gan,
+                                    use_bias=False, name=name + '/E_B')
         self.netD_A = DiscriminatorEdges(self.netG_B_A.output_shape, 32, use_sigmoid=use_sigmoid, name=name+'/D_A')
         self.netD_B = Discriminator(self.netG_A_B.output_shape, num_dis_filters, use_sigmoid=use_sigmoid, name=name+'/D_B')
 
@@ -314,9 +321,10 @@ class AugmentedCycleGAN:
         rec_A = self.netG_B_A(fake_B)
 
         concat_B_A = T.concatenate((fake_A, real_B), 1)
-        mu_z_real_B, logvar_z_real_B = self.netE_B(concat_B_A)
+        stats_z_real_B = self.netE_B(concat_B_A)
 
-        post_z_real_B = nn.utils.gauss_reparametrize(mu_z_real_B, logvar_z_real_B, clip=-4)
+        post_z_real_B = stats_z_real_B if self.use_latent_gan \
+            else nn.utils.gauss_reparametrize(*stats_z_real_B, clip=-4)
 
         rec_B = self.netG_A_B(fake_A, post_z_real_B)
         visuals = OrderedDict([('real_B', real_B), ('fake_B', fake_B), ('rec_A', rec_A),
@@ -330,21 +338,12 @@ class AugmentedCycleGAN:
         noise_fake_A = T.clip(noise_fake_A, -1, 1)
 
         concat_B_A = T.concatenate((fake_A, real_B), 1)
-        mu_z_real_B, logvar_z_real_B = self.netE_B(concat_B_A)
+        stats_z_real_B = self.netE_B(concat_B_A)
 
-        post_z_real_B = nn.utils.gauss_reparametrize(mu_z_real_B, logvar_z_real_B, clip=-4)
+        post_z_real_B = stats_z_real_B if self.use_latent_gan \
+            else nn.utils.gauss_reparametrize(*stats_z_real_B, clip=-4)
         rec_B = self.netG_A_B(noise_fake_A, post_z_real_B)
         return rec_B
-
-    def predict_A(self, real_B):
-        return self.netG_B_A(real_B)
-
-    def predict_B(self, real_A, z_B):
-        return self.netG_A_B(real_A, z_B)
-
-    def predict_enc_params(self, real_A, real_B):
-        concat_B_A = T.concatenate((real_A, real_B), 1)
-        return self.netE_B(concat_B_A)
 
     def generate_multi(self, real_A, multi_prior_z_B):
         shape = tuple(real_A.shape)
@@ -371,8 +370,7 @@ class AugmentedCycleGAN:
 
         if self.use_latent_gan:
             concat_B_A = T.concatenate((fake_A, real_B), 1)
-            mu_z_real_B, logvar_z_real_B = self.netE_B(concat_B_A)
-            logvar_z_real_B *= 0.
+            mu_z_real_B = self.netE_B(concat_B_A)
             loss_D_fake_z_B, loss_D_true_z_B, pred_fake_z_B, pred_true_z_B = discriminate(self.netD_z_B, self.gan_loss,
                                                                                           mu_z_real_B, z_B)
             loss_D_z_B = .5 * (loss_D_fake_z_B + loss_D_true_z_B)
@@ -390,21 +388,20 @@ class AugmentedCycleGAN:
         fake_B = self.netG_A_B(real_A, z_B)
         fake_A = self.netG_B_A(real_B)
         concat_B_A = T.concatenate((fake_A, real_B), 1)
-        mu_z_real_B, logvar_z_real_B = self.netE_B(concat_B_A)
+        stats_z_real_B = self.netE_B(concat_B_A)
 
         if self.use_latent_gan:
-            post_z_real_B = mu_z_real_B
-            logvar_z_real_B *= 0.
+            post_z_real_B = stats_z_real_B
 
             pred_fake_z_B = self.netD_z_B(post_z_real_B)
             loss_G_z_B = self.gan_loss(pred_fake_z_B, True)
             loss_G += loss_G_z_B
             losses['loss_G_z_B'] = loss_G_z_B
         else:
-            post_z_real_B = nn.utils.gauss_reparametrize(mu_z_real_B, logvar_z_real_B)
+            post_z_real_B = nn.utils.gauss_reparametrize(*stats_z_real_B, clip=-4)
 
             # measure KLD
-            kld_z_B = nn.kld_std_gauss(mu_z_real_B, logvar_z_real_B)
+            kld_z_B = nn.kld_std_gauss(*stats_z_real_B)
             loss_G += kld_z_B * lambda_z_B
             losses['kld_z_B'] = kld_z_B
 
@@ -420,14 +417,13 @@ class AugmentedCycleGAN:
 
         # reconstruct z_B from A and fake_B : A ==> z_B <== fake_B
         concat_A_B = T.concatenate((real_A, fake_B), 1)
-        mu_z_fake_B, logvar_z_fake_B = self.netE_B(concat_A_B)
+        stats_z_fake_B = self.netE_B(concat_A_B)
 
         if self.use_latent_gan:
-            loss_cycle_z_B = nn.norm_error(mu_z_fake_B, z_B, 1)
+            loss_cycle_z_B = nn.norm_error(stats_z_fake_B, z_B, 1)
         else:
             # minimize the NLL of original z_B sample
-            log_prob_z_B = nn.log_prob_gaussian(z_B, mu_z_fake_B.flatten(2), logvar_z_fake_B.flatten(2))
-            loss_cycle_z_B = -T.mean(log_prob_z_B)
+            loss_cycle_z_B = nn.neg_log_prob_gaussian(z_B, *stats_z_real_B)
 
         # B -> A,z_B -> B cycle loss
         rec_B = self.netG_A_B(fake_A, post_z_real_B)
@@ -450,11 +446,13 @@ class AugmentedCycleGAN:
         dis_losses = self.get_dis_cost(real_A, real_B, z_B)
         gen_losses, gen_visuals = self.get_gen_cost(real_A, real_B, z_B, lambda_A, lambda_B, lambda_z_B)
 
-        updates_dis = nn.adam(dis_losses['loss_D'], self.netD_A.trainable + self.netD_B.trainable, lr, beta1,
-                              clip_by_norm=max_norm)
-        updates_gen = nn.adam(gen_losses['loss_G'],
-                              self.netG_A_B.trainable + self.netG_B_A.trainable + self.netE_B.trainable, lr, beta1,
-                              clip_by_norm=max_norm)
+        dis_params = self.netD_A.trainable + self.netD_B.trainable
+        if self.use_latent_gan:
+            dis_params += self.netD_z_B.trainable
+        gen_params = self.netG_A_B.trainable + self.netG_B_A.trainable + self.netE_B.trainable
+
+        updates_dis = nn.adam(dis_losses['loss_D'], dis_params, lr, beta1, clip_by_norm=max_norm)
+        updates_gen = nn.adam(gen_losses['loss_G'], gen_params, lr, beta1, clip_by_norm=max_norm)
         return updates_dis, updates_gen, dis_losses, gen_losses, gen_visuals
 
 

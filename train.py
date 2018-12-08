@@ -13,7 +13,7 @@ n_dis_filters = 64
 n_enc_filters = 32
 use_dropout = False
 use_sigmoid = False
-use_latent_gan = False
+use_latent_gan = True
 n_multi = 10
 
 bs = 80
