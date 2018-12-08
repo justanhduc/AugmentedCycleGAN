@@ -37,6 +37,9 @@ class Edges2Shoes(nn.DataManager):
             shuffle(self.dataset[1])
 
         for i in range(0, len(self), self.batch_size):
+            if i + self.batch_size > len(self):
+                continue
+
             edges = np.array([split_image(imageio.imread(os.path.join(self.path, file)))[0]
                               for file in self.dataset[0][i:i + self.batch_size]], 'float32')
             shoes = np.array([split_image(imageio.imread(os.path.join(self.path, file)))[1]
@@ -47,5 +50,5 @@ class Edges2Shoes(nn.DataManager):
 if __name__ == '__main__':
     train_data = Edges2Shoes(None, 100, 20, shuffle=True)
     for res in train_data:
-        print(res[1][0].shape[1], res[1][1].shape[1])
+        print(res[1][0].shape, res[1][1].shape)
 

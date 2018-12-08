@@ -15,7 +15,7 @@ use_dropout = False
 use_sigmoid = False
 n_multi = 10
 
-bs = 8
+bs = 80
 lr = 2e-4
 lambda_A = 1.
 lambda_B = 1.
@@ -24,8 +24,8 @@ max_norm = 500.
 beta1 = .5
 n_epochs = 25
 n_epocs_decay = 25
-print_freq = 100
-valid_freq = 500
+print_freq = 200
+valid_freq = 600
 num_imgs_to_save = 20
 
 
