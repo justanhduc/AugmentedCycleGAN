@@ -304,7 +304,7 @@ class AugmentedCycleGAN:
         self.netG_A_B = CINResnetGen(input_shape, num_gen_filters, n_latent, 3, use_dropout=use_dropout, name=name + 'G_A_B')
         self.netG_B_A = ResnetGen(input_shape, num_gen_filters, 3, use_dropout=use_dropout, name=name + 'G_B_A')
 
-        latent_input_shape = input_shape[:1] + (output_dim,) + input_shape[2:]
+        latent_input_shape = (input_shape[0], input_shape[1] + output_dim) + input_shape[2:]
         self.netE_B = LatentEncoder(latent_input_shape, n_latent, num_enc_filters,
                                     partial(nn.BatchNormLayer, activation=None), deterministic=use_latent_gan,
                                     use_bias=False, name=name + '/E_B')
