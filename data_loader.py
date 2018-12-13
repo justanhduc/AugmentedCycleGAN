@@ -3,7 +3,6 @@ import imageio
 import os
 import neuralnet as nn
 from random import shuffle
-from skimage import transform
 
 path = 'D:/1_Share/edges2shoes'
 image_size = 64
@@ -45,10 +44,3 @@ class Edges2Shoes(nn.DataManager):
             shoes = np.array([split_image(imageio.imread(os.path.join(self.path, file)))[1]
                               for file in self.dataset[1][i:i + self.batch_size]], 'float32')
             yield edges, shoes
-
-
-if __name__ == '__main__':
-    train_data = Edges2Shoes(None, 100, 20, shuffle=True)
-    for res in train_data:
-        print(res[1][0].shape, res[1][1].shape)
-

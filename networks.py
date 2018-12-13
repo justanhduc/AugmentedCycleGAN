@@ -1,6 +1,5 @@
 import neuralnet as nn
 from theano import tensor as T
-import numpy as np
 from functools import partial
 from collections import OrderedDict
 
@@ -377,9 +376,10 @@ class AugmentedCycleGAN:
             loss_D += loss_D_z_B
             losses['loss_D_z_B'] = loss_D_z_B
 
-        losses.update([('D_A', loss_D_A), ('D_B', loss_D_B), ('loss_D', loss_D), ('P_t_A', pred_true_A.mean()),
-                       ('P_f_A', pred_fake_A.mean()), ('P_t_B', pred_true_B.mean()), ('P_f_B', pred_fake_B.mean())])
-        return losses
+        losses.update([('D_A', loss_D_A), ('D_B', loss_D_B), ('loss_D', loss_D)])
+        preds = OrderedDict([('P_t_A', pred_true_A), ('P_f_A', pred_fake_A), ('P_t_B', pred_true_B),
+                             ('P_f_B', pred_fake_B)])
+        return losses, preds
 
     def get_gen_cost(self, real_A, real_B, z_B, lambda_A, lambda_B, lambda_z_B):
         losses = OrderedDict()
@@ -443,23 +443,19 @@ class AugmentedCycleGAN:
         beta1 = kwargs.pop('beta1')
         max_norm=kwargs.pop('max_norm', 500.)
 
-        dis_losses = self.get_dis_cost(real_A, real_B, z_B)
-        gen_losses, gen_visuals = self.get_gen_cost(real_A, real_B, z_B, lambda_A, lambda_B, lambda_z_B)
+        dis_losses, dis_preds = self.get_dis_cost(real_A, real_B, z_B)
+        gen_losses, _ = self.get_gen_cost(real_A, real_B, z_B, lambda_A, lambda_B, lambda_z_B)
 
         dis_params = self.netD_A.trainable + self.netD_B.trainable
         if self.use_latent_gan:
             dis_params += self.netD_z_B.trainable
         gen_params = self.netG_A_B.trainable + self.netG_B_A.trainable + self.netE_B.trainable
 
-        updates_dis = nn.adam(dis_losses['loss_D'], dis_params, lr, beta1, clip_by_norm=max_norm)
-        updates_gen = nn.adam(gen_losses['loss_G'], gen_params, lr, beta1, clip_by_norm=max_norm)
-        return updates_dis, updates_gen, dis_losses, gen_losses, gen_visuals
+        updates_dis, _, dis_grads = nn.adam(dis_losses['loss_D'], dis_params, lr, beta1, clip_by_norm=max_norm)
+        updates_gen, _, gen_grads = nn.adam(gen_losses['loss_G'], gen_params, lr, beta1, clip_by_norm=max_norm)
 
-
-if __name__ == '__main__':
-    x = T.ones((1, 3, 64, 64))
-    z = T.ones((1, 16))
-    net = LatentEncoder((1, 3, 64, 64), 16, 32, partial(nn.BatchNormLayer, activation=None))
-    y = net(x)
-    f = nn.function([], y)
-    print(f()[0].shape)
+        grad_norms = OrderedDict(
+            zip([dis_param.name.replace('/', '_') for dis_param in dis_params], [nn.utils.p_norm(dis_grad, 2) for dis_grad in dis_grads]))
+        grad_norms.update(
+            zip([gen_param.name.replace('/', '_') for gen_param in gen_params], [nn.utils.p_norm(gen_grad, 2) for gen_grad in gen_grads]))
+        return updates_dis, updates_gen, dis_losses, dis_preds, gen_losses, grad_norms

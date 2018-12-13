@@ -35,7 +35,7 @@ def unnormalize(x):
 
 
 def pre_process(x):
-    downsample = nn.DownsamplingLayer((None, 3, image_size*4, image_size*4), 4)
+    downsample = nn.DownsamplingLayer((None, 3, image_size * 4, image_size * 4), 4)
     return downsample(x.dimshuffle(0, 3, 1, 2)) / 255. * 2. - 1.
 
 
@@ -55,12 +55,16 @@ def train():
                             use_dropout, use_sigmoid, use_latent_gan)
 
     nn.set_training_on()
-    updates_dis, updates_gen, dis_losses, gen_losses, _ = net.learn(X_A, X_B, z, lambda_A, lambda_B, lambda_z_B,
-                                                                    lr=lr_, beta1=beta1, max_norm=max_norm)
+    updates_dis, updates_gen, dis_losses, dis_preds, gen_losses, grad_norms = net.learn(X_A, X_B, z, lambda_A, lambda_B,
+                                                                                        lambda_z_B, lr=lr_, beta1=beta1,
+                                                                                        max_norm=max_norm)
     train_dis = nn.function([], list(dis_losses.values()), updates=updates_dis, givens={X_A_full: X_A_, X_B_full: X_B_},
                             name='train discriminators')
     train_gen = nn.function([], list(gen_losses.values()), updates=updates_gen, givens={X_A_full: X_A_, X_B_full: X_B_},
                             name='train generators')
+    discriminate = nn.function([], list(dis_preds.values()), givens={X_A_full: X_A_, X_B_full: X_B_}, name='discriminate')
+    compute_grad_norms = nn.function([], list(grad_norms.values()), givens={X_A_full: X_A_, X_B_full: X_B_},
+                                     name='compute grad norms')
 
     nn.anneal_learning_rate(lr_, idx, 'linear', num_iters=n_epocs_decay)
     train_dis_decay = nn.function([idx], list(dis_losses.values()), updates=updates_dis, givens={X_A_full: X_A_, X_B_full: X_B_},
@@ -85,6 +89,8 @@ def train():
         with mon:
             res_dis = train_dis() if epoch <= n_epochs else train_dis_decay(epoch - n_epochs)
             res_gen = train_gen()
+            preds = discriminate()
+            grads_ = compute_grad_norms()
 
             mon.plot('lr', lr_.get_value())
 
@@ -93,6 +99,12 @@ def train():
 
             for j, k in enumerate(gen_losses.keys()):
                 mon.plot(k, res_gen[j])
+
+            for j, k in enumerate(dis_preds.keys()):
+                mon.hist(k, preds[j])
+
+            for j, k in enumerate(grad_norms.keys()):
+                mon.plot(k, grads_[j])
 
             if it % valid_freq == 0:
                 for _ in val_data:
@@ -110,6 +122,8 @@ def train():
                 mon.dump(nn.utils.shared2numpy(net.netD_A.params), 'dis_A.npy', 5)
                 mon.dump(nn.utils.shared2numpy(net.netD_B.params), 'dis_B.npy', 5)
                 mon.dump(nn.utils.shared2numpy(net.netE_B.params), 'enc_B.npy', 5)
+                if use_latent_gan:
+                    mon.dump(nn.utils.shared2numpy(net.netD_z_B.params), 'dis_z_B.npy', 5)
 
     mon.flush()
     mon.dump(nn.utils.shared2numpy(net.netG_A_B.params), 'gen_A_B.npy')
@@ -117,6 +131,8 @@ def train():
     mon.dump(nn.utils.shared2numpy(net.netD_A.params), 'dis_A.npy')
     mon.dump(nn.utils.shared2numpy(net.netD_B.params), 'dis_B.npy')
     mon.dump(nn.utils.shared2numpy(net.netE_B.params), 'enc_B.npy')
+    if use_latent_gan:
+        mon.dump(nn.utils.shared2numpy(net.netD_z_B.params), 'dis_z_B.npy')
     print('Training finished!')
 
 
