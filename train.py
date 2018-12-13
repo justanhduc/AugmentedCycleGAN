@@ -1,5 +1,34 @@
+import argparse
+
+parser = argparse.ArgumentParser('Augmented CycleGAN')
+parser.add_argument('--latent_dim', type=int, default=16, help='Latent dimension')
+parser.add_argument('--n_gen_filters', type=int, default=32, help='Number of initial filters in generators')
+parser.add_argument('--n_dis_filters', type=int, default=64, help='Number of initial filters in discriminators')
+parser.add_argument('--n_enc_filters', type=int, default=32, help='Number of initial filters in encoders')
+parser.add_argument('--use_dropout', action='store_true', default=False, help='Whether to use dropout in conditional resblock')
+parser.add_argument('--use_sigmoid', action='store_true', default=False, help='Whether to use orginal sigmoid GAN')
+parser.add_argument('--use_latent_gan', action='store_true', default=False, help='Whether to use GAN on latent codes')
+
+parser.add_argument('--bs', type=int, default=80, help='Batchsize')
+parser.add_argument('--lr', type=float, default=2e-4, help='Learning rate')
+parser.add_argument('--lambda_A', type=float, default=1., help='Weight for cycle loss of domain A')
+parser.add_argument('--lambda_B', type=float, default=1., help='Weight for cycle loss of domain B')
+parser.add_argument('--lambda_z_B', type=float, default=.025, help='Weight for cycle loss of latent of B')
+parser.add_argument('--max_norm', type=float, default=500., help='Maximum gradient norm')
+parser.add_argument('--beta1', type=float, default=.5, help='Momentum coefficient')
+parser.add_argument('--n_epochs', type=int, default=25, help='Number of training epochs without lr decay')
+parser.add_argument('--n_epochs_decay', type=int, default=25, help='Number of training epochs with lr decay')
+parser.add_argument('--print_freq', type=int, default=200, help='Logging frequency')
+parser.add_argument('--valid_freq', type=int, default=600, help='Validation frequency')
+parser.add_argument('--n_multi', type=int, default=10, help='Number of noise samples to generate multiple images given one image')
+parser.add_argument('--n_imgs_to_save', type=int, default=20, help='Number of images to save in each iteration')
+parser.add_argument('--gpu', type=int, default=0, help='Which GPU to be used')
+
+parser.add_argument('--param_file_version', type=int, default=0, help='Weight file version to use to testing')
+args = parser.parse_args()
+
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
 import neuralnet as nn
 from theano import tensor as T
 import numpy as np
@@ -7,27 +36,30 @@ import numpy as np
 from networks import AugmentedCycleGAN
 from data_loader import Edges2Shoes, image_size
 
-n_latent = 16
-n_gen_filters = 32
-n_dis_filters = 64
-n_enc_filters = 32
-use_dropout = False
-use_sigmoid = False
-use_latent_gan = True
-n_multi = 10
+latent_dim = args.latent_dim
+n_gen_filters = args.n_gen_filters
+n_dis_filters = args.n_dis_filters
+n_enc_filters = args.n_enc_filters
+use_dropout = args.use_dropout
+use_sigmoid = args.use_sigmoid
+use_latent_gan = args.use_latent_gan
 
-bs = 80
-lr = 2e-4
-lambda_A = 1.
-lambda_B = 1.
-lambda_z_B = .025
-max_norm = 500.
-beta1 = .5
-n_epochs = 25
-n_epocs_decay = 25
-print_freq = 200
-valid_freq = 600
-num_imgs_to_save = 20
+bs = args.bs
+lr = args.lr
+lambda_A = args.lambda_A
+lambda_B = args.lambda_B
+lambda_z_B = args.lambda_z_B
+max_norm = args.max_norm
+beta1 = args.beta1
+n_epochs = args.n_epochs
+n_epochs_decay = args.n_epochs_decay
+print_freq = args.print_freq
+valid_freq = args.valid_freq
+n_multi = args.n_multi
+n_imgs_to_save = args.n_imgs_to_save
+
+# for testing
+param_file_version = args.param_file_version
 
 
 def unnormalize(x):
@@ -44,14 +76,14 @@ def train():
     X_B_full = T.tensor4('B')
     X_A = pre_process(X_A_full)
     X_B = pre_process(X_B_full)
-    z = nn.utils.srng.normal((bs, n_latent))
+    z = nn.utils.srng.normal((bs, latent_dim))
     idx = T.scalar('iter')
 
     X_A_ = nn.placeholder((bs, 3, image_size*4, image_size*4), name='A_plhd')
     X_B_ = nn.placeholder((bs, 3, image_size*4, image_size*4), name='B_plhd')
     lr_ = nn.placeholder(value=lr, name='lr_plhd')
 
-    net = AugmentedCycleGAN((None, 3, image_size, image_size), n_latent, n_gen_filters, n_dis_filters, n_enc_filters, 3,
+    net = AugmentedCycleGAN((None, 3, image_size, image_size), latent_dim, n_gen_filters, n_dis_filters, n_enc_filters, 3,
                             use_dropout, use_sigmoid, use_latent_gan)
 
     nn.set_training_on()
@@ -66,19 +98,19 @@ def train():
     compute_grad_norms = nn.function([], list(grad_norms.values()), givens={X_A_full: X_A_, X_B_full: X_B_},
                                      name='compute grad norms')
 
-    nn.anneal_learning_rate(lr_, idx, 'linear', num_iters=n_epocs_decay)
+    nn.anneal_learning_rate(lr_, idx, 'linear', num_iters=n_epochs_decay)
     train_dis_decay = nn.function([idx], list(dis_losses.values()), updates=updates_dis, givens={X_A_full: X_A_, X_B_full: X_B_},
                                   name='train discriminators with decay')
 
     nn.set_training_off()
-    fixed_z = T.constant(np.random.normal(size=(bs, n_latent)), dtype='float32')
-    fixed_multi_z = T.constant(np.repeat(np.random.normal(size=(n_multi, n_latent)), bs, 0), dtype='float32')
+    fixed_z = T.constant(np.random.normal(size=(bs, latent_dim)), dtype='float32')
+    fixed_multi_z = T.constant(np.repeat(np.random.normal(size=(n_multi, latent_dim)), bs, 0), dtype='float32')
     visuals = net.generate_cycle(X_A, X_B, fixed_z)
     multi_fake_B = net.generate_multi(X_A, fixed_multi_z)
     visualize_single = nn.function([], list(visuals.values()), givens={X_A_full: X_A_, X_B_full: X_B_}, name='visualize single')
     visualize_multi = nn.function([], multi_fake_B, givens={X_A_full: X_A_}, name='visualize multi')
 
-    train_data = Edges2Shoes((X_A_, X_B_), bs, n_epochs+n_epocs_decay+1, 'train', True)
+    train_data = Edges2Shoes((X_A_, X_B_), bs, n_epochs + n_epochs_decay + 1, 'train', True)
     val_data = Edges2Shoes((X_A_, X_B_), bs, 1, 'val', False, num_data=bs)
     mon = nn.Monitor(model_name='Augmented_CycleGAN', print_freq=print_freq)
 
@@ -112,7 +144,7 @@ def train():
                     vis_multi = visualize_multi()
 
                 for j, k in enumerate(visuals.keys()):
-                    mon.imwrite(k, vis_single[j][:num_imgs_to_save], callback=unnormalize)
+                    mon.imwrite(k, vis_single[j][:n_imgs_to_save], callback=unnormalize)
 
                 for j, fake_B in enumerate(vis_multi):
                     mon.imwrite('fake_B_multi_%d.jpg' % j, fake_B, callback=unnormalize)
