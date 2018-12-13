@@ -1,6 +1,7 @@
 import argparse
 
 parser = argparse.ArgumentParser('Augmented CycleGAN')
+parser.add_argument('--test', action='store_true', default=False, help='Train or test')
 parser.add_argument('--latent_dim', type=int, default=16, help='Latent dimension')
 parser.add_argument('--n_gen_filters', type=int, default=32, help='Number of initial filters in generators')
 parser.add_argument('--n_dis_filters', type=int, default=64, help='Number of initial filters in discriminators')
@@ -24,7 +25,7 @@ parser.add_argument('--n_multi', type=int, default=10, help='Number of noise sam
 parser.add_argument('--n_imgs_to_save', type=int, default=20, help='Number of images to save in each iteration')
 parser.add_argument('--gpu', type=int, default=0, help='Which GPU to be used')
 
-parser.add_argument('--param_file_version', type=int, default=0, help='Weight file version to use to testing')
+parser.add_argument('--param_file_version', type=int, default=-1, help='Weight file version to use to testing')
 args = parser.parse_args()
 
 import os
@@ -35,6 +36,8 @@ import numpy as np
 
 from networks import AugmentedCycleGAN
 from data_loader import Edges2Shoes, image_size
+
+testing = args.test
 
 latent_dim = args.latent_dim
 n_gen_filters = args.n_gen_filters
@@ -169,4 +172,10 @@ def train():
 
 
 if __name__ == '__main__':
-    train()
+    if testing:
+        if args.param_file_version < 0:
+            raise ValueError('A checkpoint version should be provided.')
+        from test import test
+        test()
+    else:
+        train()
